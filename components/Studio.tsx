@@ -203,7 +203,14 @@ export default function Studio() {
         }),
       });
 
-      const data = await res.json();
+      let data;
+      const text = await res.text();
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        throw new Error(`서버 응답 파싱 실패 (상태: ${res.status}): Vercel 서버 에러 혹은 타임아웃 발생`);
+      }
+
       if (!res.ok) {
         throw new Error(data.error || '이미지 생성에 실패했습니다.');
       }
