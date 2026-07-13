@@ -1,20 +1,22 @@
-import admin from 'firebase-admin';
+import { initializeApp, getApps, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
 
-if (!admin.apps.length) {
+if (!getApps().length) {
   try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
       const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
+      initializeApp({
+        credential: cert(serviceAccount),
       });
     } else {
       console.warn("FIREBASE_SERVICE_ACCOUNT_KEY is missing. Initializing admin without credentials.");
-      admin.initializeApp();
+      initializeApp();
     }
   } catch (error) {
     console.error('Firebase admin initialization error', error);
   }
 }
 
-export const getAdminDb = () => admin.firestore();
-export const getAdminAuth = () => admin.auth();
+export const getAdminDb = () => getFirestore();
+export const getAdminAuth = () => getAuth();
