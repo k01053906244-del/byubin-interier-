@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
 import { DAILY_IP_LIMIT, ROOM_TYPES, STYLES } from '@/lib/constants';
-import { getAdminAuth, getAdminDb } from '@/lib/firebaseAdmin';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -50,6 +49,7 @@ export async function POST(req: NextRequest) {
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const idToken = authHeader.split('Bearer ')[1];
       try {
+        const { getAdminAuth } = await import('@/lib/firebaseAdmin');
         const decodedToken = await getAdminAuth().verifyIdToken(idToken);
         uid = decodedToken.uid;
       } catch (err) {
@@ -96,6 +96,7 @@ export async function POST(req: NextRequest) {
     if (isDemoMode) {
       if (uid) {
         try {
+          const { getAdminDb } = await import('@/lib/firebaseAdmin');
           adminDbInstance = getAdminDb();
           userRef = adminDbInstance.collection('users').doc(uid);
           const userDoc = await userRef.get();
