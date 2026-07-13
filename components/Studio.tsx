@@ -6,6 +6,9 @@ import { FREE_GENERATIONS, ROOM_TYPES, STYLES } from '@/lib/constants';
 import { useLocalStorage } from '@/lib/useLocalStorage';
 import CompareSlider from './CompareSlider';
 import Reveal from './Reveal';
+import { signInWithPopup, onAuthStateChanged, User, signOut } from 'firebase/auth';
+import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { auth, db, googleProvider } from '@/lib/firebase';
 
 const LOADING_STATUSES = [
   '공간 구조 분석 중...',
@@ -27,10 +30,41 @@ export default function Studio() {
     'reroom_free_generations',
     String(FREE_GENERATIONS)
   );
-  const freeCount = Number(freeCountRaw);
   const [byokModeRaw, setByokModeRaw] = useLocalStorage('reroom_byok_mode', 'false');
   const byokMode = byokModeRaw === 'true';
   const [byokKey, setByokKey] = useLocalStorage('reroom_byok_key', '');
+
+  // Firebase Auth & Credits
+  const [user, setUser] = useState<User | null>(null);
+  const [credits, setCredits] = useState<number>(0);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      setIsAuthLoading(false);
+      
+      if (currentUser) {
+        const userRef = doc(db, 'users', currentUser.uid);
+        const snap = await getDoc(userRef);
+        if (!snap.exists()) {
+          // 신규 유저 가입 시 2 크레딧 제공
+          await setDoc(userRef, { credits: 2, createdAt: new Date() });
+        }
+        
+        // 실시간 크레딧 구독
+        const unsubs = onSnapshot(userRef, (docSnap) => {
+          if (docSnap.exists()) {
+            setCredits(docSnap.data().credits || 0);
+          }
+        });
+        return () => unsubs();
+      } else {
+        setCredits(0);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
 
   // 생성 상태
   const [isLoading, setIsLoading] = useState(false);
@@ -98,17 +132,42 @@ export default function Studio() {
     reader.readAsDataURL(file);
   };
 
+  const handleLogin = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+      setErrorMsg(null);
+    } catch (err) {
+      console.error(err);
+      setErrorMsg('로그인 중 오류가 발생했습니다.');
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const handleGenerate = async () => {
     if (!uploadedImage) {
       setErrorMsg('공간 인테리어를 위해 먼저 사진을 업로드해 주세요.');
       return;
     }
-    if (!byokMode && freeCount <= 0) {
-      setErrorMsg(
-        `무료 체험 횟수(${FREE_GENERATIONS}회)를 모두 사용하셨습니다. "내 API 키로 무제한 사용" 토글을 켜고 무료 발급받은 개인 API 키를 등록해 주세요.`
-      );
-      return;
+    
+    if (!byokMode) {
+      if (!user) {
+        setErrorMsg('로그인 후 무료 체험(2회) 및 프리미엄 기능을 이용하실 수 있습니다.');
+        handleLogin();
+        return;
+      }
+      if (credits <= 0) {
+        setErrorMsg('크레딧이 모두 소진되었습니다. 프리미엄으로 업그레이드(수동 입금 확인) 후 어드민에게 문의하세요.');
+        return;
+      }
     }
+
     if (byokMode && !byokKey.trim()) {
       setErrorMsg('API 키가 입력되지 않았습니다. AI Studio에서 발급받은 API 키를 입력해 주세요.');
       return;
@@ -125,9 +184,17 @@ export default function Studio() {
     const startTime = Date.now();
 
     try {
+      let idToken = null;
+      if (user && !byokMode) {
+        idToken = await user.getIdToken();
+      }
+
       const res = await fetch('/api/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(idToken && { 'Authorization': `Bearer ${idToken}` })
+        },
         body: JSON.stringify({
           image: uploadedImage,
           roomTypeId: selectedRoom,
@@ -144,9 +211,6 @@ export default function Studio() {
       setResultImage(`data:image/png;base64,${data.image}`);
       setGenerationTime(Number(((Date.now() - startTime) / 1000).toFixed(1)));
 
-      if (!byokMode) {
-        setFreeCountRaw(String(Math.max(0, freeCount - 1)));
-      }
     } catch (err) {
       console.error(err);
       setErrorMsg(
@@ -195,11 +259,26 @@ export default function Studio() {
                 나의 리디자인 스튜디오
               </h2>
             </div>
-            <span className="rounded-full border border-line bg-paper-raised px-4 py-2 text-xs font-semibold text-ink-soft">
-              {byokMode
-                ? '내 API 키로 무제한 사용 중'
-                : `무료 체험 ${FREE_GENERATIONS}회 중 ${freeCount}회 남음`}
-            </span>
+            <div className="flex flex-col items-end gap-2">
+              <span className="rounded-full border border-line bg-paper-raised px-4 py-2 text-xs font-semibold text-ink-soft">
+                {byokMode
+                  ? '내 API 키로 무제한 사용 중'
+                  : isAuthLoading
+                  ? '로딩 중...'
+                  : user
+                  ? `남은 크레딧: ${credits}회`
+                  : '로그인 후 이용 가능'}
+              </span>
+              {user ? (
+                <button onClick={handleLogout} className="text-xs text-ink-faint underline hover:text-ink">
+                  로그아웃
+                </button>
+              ) : (
+                <button onClick={handleLogin} className="text-xs font-bold text-clay hover:underline">
+                  구글로 시작하기
+                </button>
+              )}
+            </div>
           </div>
         </Reveal>
 

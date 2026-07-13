@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
 import { DAILY_IP_LIMIT, ROOM_TYPES, STYLES } from '@/lib/constants';
+import { getAdminAuth, getAdminDb } from '@/lib/firebaseAdmin';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -44,6 +45,18 @@ export async function POST(req: NextRequest) {
     byokKey = body.byokKey;
     const { image, roomTypeId, styleId } = body;
 
+    const authHeader = req.headers.get('Authorization');
+    let uid = null;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const idToken = authHeader.split('Bearer ')[1];
+      try {
+        const decodedToken = await getAdminAuth().verifyIdToken(idToken);
+        uid = decodedToken.uid;
+      } catch (err) {
+        console.error('Token verification failed:', err);
+      }
+    }
+
     if (!image || typeof image !== 'string') {
       return NextResponse.json(
         { error: '인테리어 디자인을 입힐 원본 방 사진을 업로드해 주세요.' },
@@ -75,22 +88,50 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 데모 모드(서버 제공 키)인 경우에만 IP당 일일 제한 검증
+    // 데모 모드(서버 제공 키)인 경우에만 일일 제한 또는 크레딧 검증
     const isDemoMode = !byokKey;
-    const referer = req.headers.get('referer') || '';
-    const isFromPortal = 
-      referer.includes('byubinfutureworks.web.app') || 
-      referer.includes('byubinfutureworks.firebaseapp.com') ||
-      referer.includes('localhost:') || 
-      referer.includes('127.0.0.1:');
+    let userRef: any = null;
+    let adminDbInstance: any = null;
+    
+    if (isDemoMode) {
+      if (uid) {
+        try {
+          adminDbInstance = getAdminDb();
+          userRef = adminDbInstance.collection('users').doc(uid);
+          const userDoc = await userRef.get();
+          const credits = userDoc.data()?.credits || 0;
+          
+          if (credits <= 0) {
+            return NextResponse.json(
+              { error: '크레딧이 부족합니다. 프리미엄(수동 계좌이체) 업그레이드가 필요합니다.' },
+              { status: 403 }
+            );
+          }
+        } catch (err) {
+          console.error("Firebase Admin DB Error:", err);
+          return NextResponse.json(
+            { error: '서버 환경변수(FIREBASE_SERVICE_ACCOUNT_KEY)가 설정되지 않아 크레딧을 확인할 수 없습니다. 관리자에게 문의하세요.' },
+            { status: 500 }
+          );
+        }
+      } else {
+        // 비로그인 IP 기반 검증 (Fallback)
+        const referer = req.headers.get('referer') || '';
+        const isFromPortal = 
+          referer.includes('byubinfutureworks.web.app') || 
+          referer.includes('byubinfutureworks.firebaseapp.com') ||
+          referer.includes('localhost:') || 
+          referer.includes('127.0.0.1:');
 
-    if (isDemoMode && !isFromPortal && !getIpUsage(ip).allowed) {
-      return NextResponse.json(
-        {
-          error: `데모 일일 제한(IP당 하루 ${DAILY_IP_LIMIT}회)을 초과했습니다. 무제한 사용을 위해 "내 API 키로 무제한 사용" 모드를 켜고 무료 API 키를 등록해 주세요.`,
-        },
-        { status: 429 }
-      );
+        if (!isFromPortal && !getIpUsage(ip).allowed) {
+          return NextResponse.json(
+            {
+              error: `데모 일일 제한(IP당 하루 ${DAILY_IP_LIMIT}회)을 초과했습니다. 로그인하여 무료 크레딧을 이용해 보세요.`,
+            },
+            { status: 429 }
+          );
+        }
+      }
     }
 
     // base64 및 mimeType 파싱
@@ -145,7 +186,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (isDemoMode) consumeIpUsage(ip);
+    if (isDemoMode) {
+      if (uid && userRef && adminDbInstance) {
+        // 성공 시 트랜잭션으로 크레딧 차감
+        await adminDbInstance.runTransaction(async (t: any) => {
+          const doc = await t.get(userRef);
+          const currentCredits = doc.data()?.credits || 0;
+          if (currentCredits > 0) {
+            t.update(userRef, { credits: currentCredits - 1 });
+          }
+        });
+      } else {
+        consumeIpUsage(ip);
+      }
+    }
 
     return NextResponse.json({ image: imageBase64 });
   } catch (error) {
