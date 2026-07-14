@@ -46,12 +46,14 @@ export async function POST(req: NextRequest) {
 
     const authHeader = req.headers.get('Authorization');
     let uid = null;
+    let email = null;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const idToken = authHeader.split('Bearer ')[1];
       try {
         const { getAdminAuth } = await import('@/lib/firebaseAdmin');
         const decodedToken = await getAdminAuth().verifyIdToken(idToken);
         uid = decodedToken.uid;
+        email = decodedToken.email;
       } catch (err) {
         console.error('Token verification failed:', err);
       }
@@ -94,44 +96,45 @@ export async function POST(req: NextRequest) {
     let adminDbInstance: any = null;
     
     if (isDemoMode) {
-      if (uid) {
-        try {
-          const { getAdminDb } = await import('@/lib/firebaseAdmin');
-          adminDbInstance = getAdminDb();
-          userRef = adminDbInstance.collection('users').doc(uid);
-          const userDoc = await userRef.get();
-          const credits = userDoc.data()?.credits || 0;
-          
-          if (credits <= 0) {
-            return NextResponse.json(
-              { error: '크레딧이 부족합니다. 프리미엄(수동 계좌이체) 업그레이드가 필요합니다.' },
-              { status: 403 }
-            );
-          }
-        } catch (err) {
-          console.error("Firebase Admin DB Error:", err);
-          return NextResponse.json(
-            { error: '서버 환경변수(FIREBASE_SERVICE_ACCOUNT_KEY)가 설정되지 않아 크레딧을 확인할 수 없습니다. 관리자에게 문의하세요.' },
-            { status: 500 }
-          );
-        }
-      } else {
-        // 비로그인 IP 기반 검증 (Fallback)
-        const referer = req.headers.get('referer') || '';
-        const isFromPortal = 
-          referer.includes('byubinfutureworks.web.app') || 
-          referer.includes('byubinfutureworks.firebaseapp.com') ||
-          referer.includes('localhost:') || 
-          referer.includes('127.0.0.1:');
+      if (!uid) {
+        return NextResponse.json(
+          { error: '로그인 후 무료 체험(2회) 및 프리미엄 기능을 이용하실 수 있습니다.' },
+          { status: 401 }
+        );
+      }
 
-        if (!isFromPortal && !getIpUsage(ip).allowed) {
+      try {
+        const { getAdminDb } = await import('@/lib/firebaseAdmin');
+        adminDbInstance = getAdminDb();
+        userRef = adminDbInstance.collection('users').doc(uid);
+        const userDoc = await userRef.get();
+        let credits = 0;
+        
+        if (!userDoc.exists) {
+          // 신규 가입자: 안전하게 서버에서 무료 2회 크레딧 자동 생성
+          credits = 2;
+          await userRef.set({
+            credits: 2,
+            tier: 'free',
+            email: email || '',
+            createdAt: new Date()
+          });
+        } else {
+          credits = userDoc.data()?.credits ?? 0;
+        }
+        
+        if (credits <= 0) {
           return NextResponse.json(
-            {
-              error: `데모 일일 제한(IP당 하루 ${DAILY_IP_LIMIT}회)을 초과했습니다. 로그인하여 무료 크레딧을 이용해 보세요.`,
-            },
-            { status: 429 }
+            { error: '남은 크레딧이 없습니다. 개인 API 키를 입력하여 사용하시거나, 프리미엄 크레딧을 구매해 주세요.' },
+            { status: 403 }
           );
         }
+      } catch (err) {
+        console.error("Firebase Admin DB Error:", err);
+        return NextResponse.json(
+          { error: '서버 에러가 발생하여 크레딧을 확인할 수 없습니다. 관리자에게 문의하세요.' },
+          { status: 500 }
+        );
       }
     }
 
@@ -192,13 +195,11 @@ export async function POST(req: NextRequest) {
         // 성공 시 트랜잭션으로 크레딧 차감
         await adminDbInstance.runTransaction(async (t: any) => {
           const doc = await t.get(userRef);
-          const currentCredits = doc.data()?.credits || 0;
+          const currentCredits = doc.data()?.credits ?? 0;
           if (currentCredits > 0) {
             t.update(userRef, { credits: currentCredits - 1 });
           }
         });
-      } else {
-        consumeIpUsage(ip);
       }
     }
 

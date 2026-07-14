@@ -46,16 +46,13 @@ export default function Studio() {
       
       if (currentUser) {
         const userRef = doc(db, 'users', currentUser.uid);
-        const snap = await getDoc(userRef);
-        if (!snap.exists()) {
-          // 신규 유저 가입 시 2 크레딧 제공
-          await setDoc(userRef, { credits: 2, createdAt: new Date() });
-        }
         
         // 실시간 크레딧 구독
         const unsubs = onSnapshot(userRef, (docSnap) => {
           if (docSnap.exists()) {
-            setCredits(docSnap.data().credits || 0);
+            setCredits(docSnap.data().credits ?? 2);
+          } else {
+            setCredits(2); // DB에 아직 문서가 없으면 기본 2회로 표시
           }
         });
         return () => unsubs();
